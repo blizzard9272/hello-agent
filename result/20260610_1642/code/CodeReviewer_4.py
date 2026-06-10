@@ -1,0 +1,6 @@
+if auto_refresh:
+            ...
+            time.sleep(0.5)
+            ...
+            fetch_and_update_data()
+            st.rerun()

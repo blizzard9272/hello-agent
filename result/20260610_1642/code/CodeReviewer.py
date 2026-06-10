@@ -1,0 +1,9 @@
+# services/price_service.py
+        from config import API_URL
+        ...
+        class BitcoinPriceService:
+            def fetch_bitcoin_data(self) -> Dict[str, Any]:
+                ...
+                bitcoin_data = data.get(COIN_ID) 
+                usd_price = bitcoin_data.get(VS_CURRENCY) 
+                ...
