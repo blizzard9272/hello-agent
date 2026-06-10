@@ -4,8 +4,7 @@
 """
 
 import asyncio
-import sys, os
-from autogen_agentchat.ui import Console
+import os
 
 from ModeClient import create_model_client
 from AgentRoles import (
@@ -47,8 +46,8 @@ async def run_software_development_team():
 
 请团队协作完成这个任务，从需求分析到最终实现。"""
 
-    # 5. 初始化文件导出器
-    exporter = FileExporter(base_dir="../result")
+    # 5. 初始化文件导出器（result 目录在 AutoGen/ 下）
+    exporter = FileExporter(base_dir="result")
     print(f"\n{'='*60}")
     print(f"  输出目录：{exporter.session_dir}")
     print(f"{'='*60}\n")

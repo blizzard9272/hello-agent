@@ -50,9 +50,16 @@ def create_engineer(model_client) -> AssistantAgent:
 当收到开发任务时，请：
 1. 仔细分析技术需求
 2. 选择合适的技术方案
-3. 编写完整的代码实现（必须用 ```python ... ``` 包裹）
-4. 添加必要的注释和说明
-5. 考虑边界情况和异常处理
+3. 编写完整的代码实现，每个代码块必须用 ```python ... ``` 包裹
+4. **重要**：每个代码块的第一行必须用注释标注文件名，格式：# file: 文件名.py
+   示例：
+   ```python
+   # file: bitcoin_price.py
+   import streamlit as st
+   ...
+   ```
+5. 添加必要的注释和说明
+6. 考虑边界情况和异常处理
 
 请提供完整的可运行代码，并在完成后说"请代码审查员检查"。"""
 
@@ -91,10 +98,8 @@ def create_user_proxy() -> UserProxyAgent:
     """创建用户代理智能体"""
     return UserProxyAgent(
         name="UserProxy",
-        description="""用户代理，负责以下职责：
-1. 代表用户验收代码审查结果
-2. 对代码质量做出最终评价
-3. 确认任务完成后立即回复 TERMINATE 终止协作
-
-重要：检查完代码后直接回复 TERMINATE，不要等待用户输入。""",
+        description="""用户代理，代表最终用户与团队交互：
+1. 阅读代码审查员的审查意见后，给出验收评价
+2. 确认任务完成则回复 TERMINATE 终止协作
+3. 如有问题则提出具体的改进建议""",
     )

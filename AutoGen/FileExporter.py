@@ -4,10 +4,9 @@
 生成的目录结构：
   result/YYYYMMDD_HHMM/
     ├── conversation.md          # 完整对话记录
-    ├── code/                     # 提取的代码文件
-    │   ├── app.py
-    │   └── ...
-    └── agents/                   # 各智能体的输出（Markdown）
+    ├── code/                     # 提取的代码文件（仅 Engineer 产出）
+    │   └── bitcoin_app.py
+    └── agents/                   # 各智能体的独立输出
         ├── 01_ProductManager.md
         ├── 02_Engineer.md
         ├── 03_CodeReviewer.md
@@ -17,14 +16,19 @@
 import os
 import re
 from datetime import datetime
-from autogen_agentchat.messages import TextMessage
+
+
+# 只有这些智能体的代码块才会被提取为独立文件
+CODE_PRODUCERS = {"Engineer"}
+
+# 需要跳过的消息来源（系统内部消息）
+SKIP_SOURCES = {"unknown", "user"}
 
 
 class FileExporter:
     """负责将智能体对话导出为文件"""
 
     def __init__(self, base_dir: str = "result"):
-        # 创建时间戳子目录
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         self.session_dir = os.path.join(base_dir, self.timestamp)
         self.code_dir = os.path.join(self.session_dir, "code")
@@ -34,37 +38,45 @@ class FileExporter:
             os.makedirs(d, exist_ok=True)
 
         self.conversation_lines: list[str] = []
-        self.agent_outputs: dict[str, list[str]] = {}  # agent_name → lines
-        self.agent_counter: dict[str, int] = {}         # agent_name → 序号
-        self.code_files: dict[str, int] = {}            # 文件名 → 版本号
+        self.agent_outputs: dict[str, list[str]] = {}  # agent_name → [content, ...]
+        self.code_files: dict[str, int] = {}            # filename → version
 
     # ------------------------------------------------------------------
     # 写入一条消息
     # ------------------------------------------------------------------
-    def write_message(self, message: TextMessage):
-        """处理单条智能体消息"""
-        source = getattr(message, "source", "unknown")
-        content = getattr(message, "content", str(message))
+    def write_message(self, message) -> bool:
+        """处理单条智能体消息。返回 True 表示成功写入，False 表示已跳过。"""
+        source = str(getattr(message, "source", ""))
+        content = getattr(message, "content", "")
 
-        # 1) 记录到完整对话
+        # 跳过系统内部消息 & 无源消息
+        if not source or source in SKIP_SOURCES:
+            return False
+        if not content or not isinstance(content, str):
+            return False
+
+        # 1) 完整对话记录
         self.conversation_lines.append(f"## [{source}]\n\n{content}\n")
 
-        # 2) 记录到该智能体的独立输出
+        # 2) 该智能体的独立输出
         if source not in self.agent_outputs:
             self.agent_outputs[source] = []
         self.agent_outputs[source].append(content)
 
-        # 3) 提取代码块 → 保存为 .py / .md 等文件
-        self._extract_and_save_code(source, content)
+        # 3) 仅对 Engineer 提取代码块
+        if source in CODE_PRODUCERS:
+            self._extract_and_save_code(source, content)
+
+        return True
 
     # ------------------------------------------------------------------
     # 提取代码块并写入文件
     # ------------------------------------------------------------------
     def _extract_and_save_code(self, source: str, text: str):
-        """从文本中提取 ```语言 ... ``` 代码块，保存到 code/ 目录"""
-        pattern = re.compile(r"```(\w+)?\s*\n(.*?)```", re.DOTALL)
+        """从文本中提取 ```语言 ... ``` 代码块，按 # file: 标注命名，保存到 code/ 目录"""
+        pattern = re.compile(r"```(\w+)\s*\n(.*?)```", re.DOTALL)
         for lang, code in pattern.findall(text):
-            lang = (lang or "txt").strip()
+            lang = lang.strip().lower()
             ext_map = {
                 "python": "py", "py": "py",
                 "javascript": "js", "js": "js",
@@ -75,24 +87,49 @@ class FileExporter:
             }
             ext = ext_map.get(lang, lang)
 
-            base_name = f"{source}_{ext}"
-            count = self.code_files.get(base_name, 0) + 1
-            self.code_files[base_name] = count
+            # 尝试从代码第一行提取文件名标注：# file: xxx.ext
+            filename = None
+            first_line = code.strip().split("\n")[0].strip()
+            file_match = re.match(r"#\s*file\s*:\s*(.+\.\w+)", first_line)
+            if file_match:
+                filename = file_match.group(1).strip()
+                # 去掉 # file: 这行，保留纯代码
+                code = code.strip().split("\n", 1)[1].strip() if "\n" in code else code
+
+            # 如果没标注，尝试从代码块前的文本中提取反引号包裹的文件名
+            if not filename:
+                # 在当前 text 中找代码块前面最近的 `xxx.py` 样式
+                code_start = text.find(f"```{lang}")
+                if code_start > 0:
+                    before = text[:code_start]
+                    name_match = re.findall(r"`([^`]+\.\w{1,6})`", before)
+                    if name_match:
+                        filename = name_match[-1]  # 取最后一个
+
+            # 回退：用 Engineer.xxx
+            if not filename:
+                filename = f"{source}.{ext}"
+
+            # 去重：同名文件加版本号
+            base = filename
+            count = self.code_files.get(base, 0) + 1
+            self.code_files[base] = count
 
             if count == 1:
-                filename = f"{source}.{ext}"
+                final_name = filename
             else:
-                filename = f"{source}_{count}.{ext}"
+                name_part, dot_ext = os.path.splitext(filename)
+                final_name = f"{name_part}_{count}{dot_ext}"
 
-            filepath = os.path.join(self.code_dir, filename)
+            filepath = os.path.join(self.code_dir, final_name)
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(code.strip() + "\n")
 
     # ------------------------------------------------------------------
-    # 保存所有内容到磁盘
+    # 保存所有内容到磁盘（按固定顺序输出 agent 文件）
     # ------------------------------------------------------------------
-    def save_all(self):
-        """将所有缓存内容写入文件"""
+    def save_all(self) -> str:
+        """将所有缓存内容写入文件，返回会话目录路径"""
 
         # 完整对话记录
         conv_path = os.path.join(self.session_dir, "conversation.md")
@@ -100,14 +137,29 @@ class FileExporter:
             f.write(f"# 智能体协作记录\n\n> 生成时间：{self.timestamp}\n\n")
             f.write("\n---\n\n".join(self.conversation_lines))
 
-        # 各智能体独立输出
-        for idx, (agent, contents) in enumerate(self.agent_outputs.items(), 1):
-            safe_name = agent.replace(" ", "_").replace("/", "_")
-            agent_path = os.path.join(
-                self.agents_dir, f"{idx:02d}_{safe_name}.md"
-            )
+        # 各智能体独立输出（按固定顺序）
+        ordered = ["user", "ProductManager", "Engineer", "CodeReviewer", "UserProxy"]
+        idx = 1
+        for name in ordered:
+            if name in self.agent_outputs:
+                safe_name = name.replace(" ", "_")
+                agent_path = os.path.join(self.agents_dir, f"{idx:02d}_{safe_name}.md")
+                idx += 1
+                contents = self.agent_outputs[name]
+                with open(agent_path, "w", encoding="utf-8") as f:
+                    f.write(f"# {name} 的输出\n\n")
+                    for i, c in enumerate(contents, 1):
+                        f.write(f"## 第 {i} 轮\n\n{c}\n\n---\n\n")
+
+        # 其他未排序的 agent（防止遗漏）
+        for name, contents in self.agent_outputs.items():
+            if name in ordered:
+                continue
+            safe_name = name.replace(" ", "_")
+            agent_path = os.path.join(self.agents_dir, f"{idx:02d}_{safe_name}.md")
+            idx += 1
             with open(agent_path, "w", encoding="utf-8") as f:
-                f.write(f"# {agent} 的输出\n\n")
+                f.write(f"# {name} 的输出\n\n")
                 for i, c in enumerate(contents, 1):
                     f.write(f"## 第 {i} 轮\n\n{c}\n\n---\n\n")
 

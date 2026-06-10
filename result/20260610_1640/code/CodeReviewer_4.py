@@ -1,3 +1,0 @@
-@st.cache_data(ttl=10)  # 缓存 10 秒
-    def fetch_bitcoin_data():
-        # ... 函数体保持不变 ...
