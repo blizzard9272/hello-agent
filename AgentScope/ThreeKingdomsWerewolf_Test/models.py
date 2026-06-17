@@ -27,3 +27,13 @@ class VoteModelCN(BaseModel):
     """最终投票阶段的 AI 输出格式"""
     target_name: str = Field(description="你决定投票杀死或投死的玩家绝对姓名")
     reason: str = Field(description="你投票给他的核心理由，会公开给大家")
+
+class WitchActionModelCN(BaseModel):
+    """女巫行动的输出格式"""
+    use_antidote: bool = Field(description="是否使用解药")
+    use_poison: bool = Field(description="是否使用毒药")
+    target_name: Optional[str] = Field(description="毒药目标玩家姓名")
+
+class SeerActionModelCN(BaseModel):
+    """预言家行动的输出格式"""
+    target_name: str = Field(description="你选择查验的玩家绝对姓名")

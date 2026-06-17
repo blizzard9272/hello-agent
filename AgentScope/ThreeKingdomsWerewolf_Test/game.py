@@ -1,18 +1,13 @@
 import asyncio
-
-from typing import List, Dict
-
-# å¯¼å¥ AgentScope 2.x æ ¸å¿ç»ä»¶
-
+import json
+import re
+from typing import List, Dict, Type
+from pydantic import BaseModel
 from agentscope.agent import Agent
-
 from agentscope.model import ChatModelBase
-
 from agentscope.message import UserMsg
-
 from prompts import get_role_prompt
-
-from models import DiscussionModelCN, VoteModelCN
+from models import DiscussionModelCN, VoteModelCN, WitchActionModelCN, SeerActionModelCN
 
 
 
@@ -243,11 +238,11 @@ class ThreeKingdomsWerewolfGame:
         # Phase 2: 第一轮讨论 —— 各狼发表建议（并发）
         # ============================================================
         print(f"  [狼人-讨论] 各狼正在发表刺杀建议...")
+        json_disc = self._build_json_prompt(DiscussionModelCN)
         discuss_tasks = [
             wolf.reply(UserMsg(
                 "系统",
-                f"请发表你的刺杀建议：今晚杀谁？理由是什么？"
-                f"（可击杀名单：{targets_str}）"
+                f"请发表你的刺杀建议。（可击杀名单：{targets_str}）\n{json_disc}"
             ))
             for wolf in self.werewolves
         ]
@@ -273,12 +268,11 @@ class ThreeKingdomsWerewolfGame:
         # Phase 4: 最终投票 —— 看到队友意见后表态（并发）
         # ============================================================
         print(f"  [狼人-投票] 狼人看到队友意见，正在最终投票...")
+        json_instruction = self._build_json_prompt(VoteModelCN)
         vote_tasks = [
             wolf.reply(UserMsg(
                 "系统",
-                f"你已看到队友的发言。现在是最终决定时刻——"
-                f"请明确说出你今晚要击杀的【一个】玩家姓名。"
-                f"只需说出名字即可。"
+                f"你已看到队友的发言。现在是最终决定时刻。\n{json_instruction}"
             ))
             for wolf in self.werewolves
         ]
@@ -292,14 +286,17 @@ class ThreeKingdomsWerewolfGame:
         for i, reply in enumerate(round2_replies):
             name = self.werewolves[i].name
             text = reply.get_text_content()
-            # 在回复文本中匹配目标姓名（取最后出现的，最靠近决策）
+            # 优先结构化解析
             voted = None
-            last_pos = -1
-            for target in targets:
-                pos = text.rfind(target)
-                if pos > last_pos:
-                    last_pos = pos
-                    voted = target
+            parsed = self._parse_structured_response(text, VoteModelCN)
+            if parsed and parsed.target_name:
+                voted = parsed.target_name
+            else:
+                # 回退：字符串匹配
+                for target in targets:
+                    if target in text:
+                        voted = target
+                        break
             if voted:
                 vote_count[voted] = vote_count.get(voted, 0) + 1
                 vote_details.append(f"{name} -> {voted}")
@@ -371,23 +368,31 @@ class ThreeKingdomsWerewolfGame:
         ))
 
         # ============================================================
-        # Phase 2: 预言家选择目标
+        # Phase 2: 预言家选择目标（结构化输出）
         # ============================================================
+        json_instruction = self._build_json_prompt(SeerActionModelCN)
         reply = await seer.reply(UserMsg(
             "系统",
-            f"请说出你要查验的【一个】玩家姓名。"
+            f"请说出你要查验的【一个】玩家姓名。\n{json_instruction}"
         ))
         text = reply.get_text_content()
         print(f"  [预言家] {seer.name} 查验回复:\n{text[:500]}")
 
-        # 匹配目标姓名（取文本中最后出现的，最靠近决策句）
+        # 解析结构化输出
         target_name = None
-        last_pos = -1
-        for name in alive_names:
-            pos = text.rfind(name)
-            if pos > last_pos:
-                last_pos = pos
-                target_name = name
+        parsed = self._parse_structured_response(text, SeerActionModelCN)
+        if parsed and parsed.target_name:
+            target_name = parsed.target_name
+            print(f"  [预言家] JSON解析成功: target_name={target_name}")
+
+        # 回退：字符串匹配
+        if not target_name:
+            last_pos = -1
+            for name in alive_names:
+                pos = text.rfind(name)
+                if pos > last_pos:
+                    last_pos = pos
+                    target_name = name
 
         if not target_name:
             print(f"  [预言家] 未能识别查验目标，默认查验第一位: {alive_names[0]}")
@@ -487,7 +492,7 @@ class ThreeKingdomsWerewolfGame:
         prompt = (
             f"请做出你的决定（只能选一项）：\n"
             + "\n".join(f"  {d}" for d in decisions)
-            + f"\n请明确说出你的选择。"
+            + f"\n{self._build_json_prompt(WitchActionModelCN)}"
         )
 
         reply = await witch.reply(UserMsg("系统", prompt))
@@ -495,10 +500,19 @@ class ThreeKingdomsWerewolfGame:
         print(f"  [女巫] {witch.name} 决策:\n{text[:500]}")
 
         # ============================================================
-        # Phase 3: 解析并执行决策
+        # Phase 3: 解析并执行决策（优先结构化输出）
         # ============================================================
-        chose_antidote = "救" in text and has_antidote and killed
-        chose_poison = "毒" in text and has_poison
+        parsed = self._parse_structured_response(text, WitchActionModelCN)
+        if parsed:
+            chose_antidote = parsed.use_antidote and has_antidote and killed
+            chose_poison = parsed.use_poison and has_poison
+            poison_name = parsed.target_name
+            print(f"  [女巫] JSON解析: use_antidote={parsed.use_antidote}, use_poison={parsed.use_poison}, target={parsed.target_name}")
+        else:
+            # 回退字符串匹配
+            chose_antidote = "救" in text and has_antidote and killed
+            chose_poison = "毒" in text and has_poison
+            poison_name = None
 
         # 同一晚不能双开
         if chose_antidote and chose_poison:
@@ -523,7 +537,8 @@ class ThreeKingdomsWerewolfGame:
         elif chose_poison:
             # 使用毒药毒杀一名玩家
             alive_names = [a.name for a in self.alive_players if a.name != witch.name]
-            # 匹配目标姓名（取最后出现的）
+            # 优先用结构化解析的目标
+            target_name = poison_name
             target_name = None
             last_pos = -1
             for name in alive_names:
@@ -579,11 +594,11 @@ class ThreeKingdomsWerewolfGame:
         # Round 1: 开场陈述
         # ============================================================
         print(f"  [辩论·第一轮] 各武将正在发表开场陈述...")
+        json_disc = self._build_json_prompt(DiscussionModelCN)
         round1_tasks = [
             player.reply(UserMsg(
                 "法官",
-                f"公开辩论开始。当前在场武将：{alive_names_str}。"
-                f"请发表你的开场陈述：你认为谁可能是狼人？为什么？"
+                f"公开辩论开始。当前在场武将：{alive_names_str}。\n{json_disc}"
             ))
             for player in self.alive_players
         ]
@@ -611,8 +626,7 @@ class ThreeKingdomsWerewolfGame:
         round2_tasks = [
             player.reply(UserMsg(
                 "法官",
-                f"你已听到所有人的陈述。请做出回应："
-                f"你怀疑谁？相信谁？是否有新的推理？"
+                f"你已听到所有人的陈述。请做出回应。\n{json_disc}"
             ))
             for player in self.alive_players
         ]
@@ -668,11 +682,11 @@ class ThreeKingdomsWerewolfGame:
         # Phase 1: 全员并发投票
         # ============================================================
         print(f"  [投票] 各武将正在投票...")
+        json_vote = self._build_json_prompt(VoteModelCN)
         vote_tasks = [
             player.reply(UserMsg(
                 "法官",
-                f"现在是放逐投票时间。请说出你要放逐的【一个】玩家姓名。"
-                f"在场武将：{alive_names_str}"
+                f"现在是放逐投票时间。在场武将：{alive_names_str}\n{json_vote}"
             ))
             for player in self.alive_players
         ]
@@ -686,15 +700,17 @@ class ThreeKingdomsWerewolfGame:
         for i, reply in enumerate(vote_replies):
             voter = self.alive_players[i].name
             text = reply.get_text_content()
-            # 匹配目标姓名（取最后出现的，最靠近决策）
+            # 优先结构化解析
             voted = None
-            last_pos = -1
-            for name in alive_names:
-                if name != voter:
-                    pos = text.rfind(name)
-                    if pos > last_pos:
-                        last_pos = pos
+            parsed = self._parse_structured_response(text, VoteModelCN)
+            if parsed and parsed.target_name:
+                voted = parsed.target_name
+            else:
+                # 回退字符串匹配
+                for name in alive_names:
+                    if name != voter and name in text:
                         voted = name
+                        break
             if voted:
                 vote_count[voted] = vote_count.get(voted, 0) + 1
                 vote_details.append(f"{voter} -> {voted}")
@@ -758,6 +774,45 @@ class ThreeKingdomsWerewolfGame:
             f"你已被放逐！你的身份是【{exiled_role}】。"
             f"（投票详情: {'; '.join(vote_details)}）"
         ))
+
+    @staticmethod
+    def _parse_structured_response(text: str, model_cls: Type[BaseModel]):
+        """从 LLM 回复中解析结构化 JSON，多级容错回退"""
+        # Level 1: 直接 JSON 解析
+        try:
+            return model_cls.model_validate_json(text)
+        except Exception:
+            pass
+        # Level 2: 提取 Markdown ```json 代码块
+        match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+        if match:
+            try:
+                return model_cls.model_validate_json(match.group(1).strip())
+            except Exception:
+                pass
+        # Level 3: 提取文本中的第一个 {...} JSON 对象
+        match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+        if match:
+            try:
+                return model_cls.model_validate_json(match.group(0))
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def _build_json_prompt(model_cls: Type[BaseModel]) -> str:
+        """根据 Pydantic 模型生成 JSON 格式说明"""
+        schema = model_cls.model_json_schema()
+        props = schema.get("properties", {})
+        required = schema.get("required", [])
+        lines = ["请以JSON格式回复，结构如下：", "{"]
+        for key, prop in props.items():
+            req_mark = "（必填）" if key in required else "（可选）"
+            desc = prop.get("description", "")
+            lines.append(f'  "{key}": {desc}{req_mark},')
+        lines.append("}")
+        lines.append("只输出JSON，不要包含任何解释或Markdown标记。")
+        return "\n".join(lines)
 
     def check_victory_conditions(self):
         """胜负裁决器"""
