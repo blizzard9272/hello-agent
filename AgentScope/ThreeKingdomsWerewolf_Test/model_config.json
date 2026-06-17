@@ -1,0 +1,26 @@
+// ============================================================
+// AgentScope 2.x 不再使用此 JSON 配置文件
+// 模型配置已迁移到 main.py 中，通过代码直接创建模型实例
+// 此文件仅作为历史参考保留
+// ============================================================
+//
+// 1.x 旧格式（仅供参考）：
+// [
+//     {
+//         "config_name": "ollama-config",
+//         "model_type": "ollama_chat",
+//         "model_name": "deepseek-r1:7b",
+//         "api_url": "http://localhost:11434/v1",
+//         "generate_args": { "temperature": 0.3 }
+//     },
+//     {
+//         "config_name": "qwen-config",
+//         "model_type": "dashscope_chat",
+//         "model_name": "qwen3.6-plus",
+//         "generate_args": { "temperature": 0.4, "max_tokens": 1024 }
+//     }
+// ]
+//
+// 2.x 对应写法见 main.py：
+//   DashScopeChatModel(credential=DashScopeCredential(api_key=...), model="qwen3.6-plus", ...)
+//   OllamaChatModel(credential=OllamaCredential(host=...), model="deepseek-r1:7b", ...)
